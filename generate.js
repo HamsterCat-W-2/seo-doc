@@ -266,13 +266,21 @@ async function takeScreenshots(shots, articleDir) {
 function insertScreenshots(mdContent, shots) {
   let result = mdContent;
   for (const shot of shots) {
-    // Match the heading line that starts with the insertAfterHeading prefix
     const headingPrefix = shot.insertAfterHeading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`(${headingPrefix}[^\n]*\n)`, "m");
-    const imgMarkdown = `\n![${shot.filename}](./${shot.filename})\n`;
-    if (regex.test(result)) {
-      result = result.replace(regex, `$1${imgMarkdown}`);
-    }
+    const headingRegex = new RegExp(`${headingPrefix}[^\n]*\n`, "m");
+    const match = headingRegex.exec(result);
+    if (!match) continue;
+
+    // Find the first paragraph after the heading (skip blank lines after heading)
+    const afterHeading = result.slice(match.index + match[0].length);
+    // Find end of first paragraph: look for a blank line after non-empty content
+    const firstParaMatch = afterHeading.match(/\n\n/);
+    const insertOffset = firstParaMatch
+      ? match.index + match[0].length + firstParaMatch.index + 2
+      : match.index + match[0].length + afterHeading.length;
+
+    const imgMarkdown = `![${shot.filename}](./${shot.filename})\n\n`;
+    result = result.slice(0, insertOffset) + imgMarkdown + result.slice(insertOffset);
   }
   return result;
 }
