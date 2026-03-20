@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NodeHtmlMarkdown } from "node-html-markdown";
+import puppeteer from "puppeteer";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -172,7 +173,108 @@ site: ${siteUrl}
 
   fs.writeFileSync(path.join(articleDir, "zh.md"), meta + chinese, "utf8");
   fs.writeFileSync(path.join(articleDir, "en.md"), meta + english, "utf8");
-  return articleDir;
+  return { articleDir, chinese, english };
+}
+
+// ─── PLAN SCREENSHOTS ─────────────────────────────────────────────────────────
+async function planScreenshots(chineseArticle, siteUrl) {
+  const client = new Anthropic({
+    authToken: process.env.ANTHROPIC_AUTH_TOKEN,
+    baseURL: process.env.ANTHROPIC_BASE_URL,
+  });
+
+  const result = await client.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 1024,
+    tools: [
+      {
+        name: "screenshot_plan",
+        description: "根据文章内容规划截图方案",
+        input_schema: {
+          type: "object",
+          properties: {
+            screenshots: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  url: { type: "string", description: "要截图的完整URL" },
+                  filename: { type: "string", description: "截图文件名，如 screenshot-homepage.png" },
+                  insertAfterHeading: { type: "string", description: "插入到哪个H2标题之后，如 '## 1.' 或 '## 3.'" },
+                },
+                required: ["url", "filename", "insertAfterHeading"],
+              },
+              minItems: 1,
+              maxItems: 3,
+            },
+          },
+          required: ["screenshots"],
+        },
+      },
+    ],
+    tool_choice: { type: "tool", name: "screenshot_plan" },
+    messages: [
+      {
+        role: "user",
+        content: `你是一个SEO内容策略师。根据以下文章内容和目标网站，判断需要截哪些页面的截图（1-3张），以及每张截图应插入到文章的哪个H2章节之后。
+
+目标网站：${siteUrl}
+
+截图选择原则：
+- 优先截文章中明确提到或展示的页面（如首页、某个分类页、某个功能页）
+- 截图应该能直观印证文章的观点，让读者看了觉得"原来是这个样子"
+- 如果文章提到具体分类/功能，可以截对应子页面（如 ${siteUrl}category/puzzle）
+- 插入位置选择文章中最能和截图内容呼应的章节
+
+文章内容：
+${chineseArticle.slice(0, 2000)}`,
+      },
+    ],
+  });
+
+  const toolUse = result.content.find((b) => b.type === "tool_use");
+  if (!toolUse) return [];
+  return toolUse.input.screenshots || [];
+}
+
+// ─── TAKE SCREENSHOTS ─────────────────────────────────────────────────────────
+async function takeScreenshots(shots, articleDir) {
+  if (!shots.length) return;
+  console.log(`\n正在截图 (${shots.length} 张)...`);
+
+  const browser = await puppeteer.launch({ headless: true });
+  try {
+    for (const shot of shots) {
+      try {
+        const page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 800 });
+        await page.goto(shot.url, { waitUntil: "networkidle2", timeout: 20000 });
+        const filePath = path.join(articleDir, shot.filename);
+        await page.screenshot({ path: filePath, fullPage: false });
+        await page.close();
+        console.log(`  ✓ ${shot.filename}`);
+      } catch (err) {
+        console.warn(`  ⚠ 截图失败 ${shot.url}: ${err.message}`);
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
+// ─── INSERT SCREENSHOTS INTO MARKDOWN ─────────────────────────────────────────
+function insertScreenshots(mdContent, shots) {
+  let result = mdContent;
+  for (const shot of shots) {
+    // Match the heading line that starts with the insertAfterHeading prefix
+    const headingPrefix = shot.insertAfterHeading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(${headingPrefix}[^\n]*\n)`, "m");
+    const imgMarkdown = `\n![${shot.filename}](./${shot.filename})\n`;
+    if (regex.test(result)) {
+      result = result.replace(regex, `$1${imgMarkdown}`);
+    }
+  }
+  return result;
 }
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
@@ -189,8 +291,24 @@ async function main() {
     process.exit(1);
   }
 
-  const filePath = parseAndSave(raw, keywords, siteUrl);
-  console.log(`\n✅ 文章已保存: ${filePath}/\n   ├── zh.md\n   └── en.md`);
+  const { articleDir, chinese, english } = parseAndSave(raw, keywords, siteUrl);
+  console.log(`\n✅ 文章已保存: ${articleDir}/\n   ├── zh.md\n   └── en.md`);
+
+  // Plan and take screenshots
+  console.log("\n正在规划截图方案...");
+  const shots = await planScreenshots(chinese, siteUrl);
+  if (shots.length) {
+    await takeScreenshots(shots, articleDir);
+
+    // Insert screenshot references into both markdown files
+    const zhPath = path.join(articleDir, "zh.md");
+    const enPath = path.join(articleDir, "en.md");
+    fs.writeFileSync(zhPath, insertScreenshots(fs.readFileSync(zhPath, "utf8"), shots), "utf8");
+    fs.writeFileSync(enPath, insertScreenshots(fs.readFileSync(enPath, "utf8"), shots), "utf8");
+    console.log(`✅ 截图已插入文章`);
+  } else {
+    console.log("⚠ 未生成截图方案");
+  }
 }
 
 main().catch((err) => {
