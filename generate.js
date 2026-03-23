@@ -17,13 +17,18 @@ function getArg(name) {
 
 const keywordsRaw = getArg("--keywords");
 const siteUrl = getArg("--url");
+const anglesRaw = getArg("--angles");
 
 if (!keywordsRaw || !siteUrl) {
   console.error(
-    "用法: node generate.js --keywords \"关键词1,关键词2\" --url https://example.com"
+    "用法: node generate.js --keywords \"关键词1,关键词2\" --url https://example.com [--angles \"角度1,角度2\"]"
   );
   process.exit(1);
 }
+
+const angles = anglesRaw
+  ? anglesRaw.split(",").map((a) => a.trim()).filter(Boolean)
+  : [];
 
 const keywords = keywordsRaw
   .split(",")
@@ -55,7 +60,7 @@ async function fetchSiteContent(url) {
 }
 
 // ─── GENERATE ARTICLE ─────────────────────────────────────────────────────────
-async function generateArticle(keywords, siteUrl, siteContent) {
+async function generateArticle(keywords, siteUrl, siteContent, angles = []) {
   const client = new Anthropic({
     authToken: process.env.ANTHROPIC_AUTH_TOKEN,
     baseURL: process.env.ANTHROPIC_BASE_URL,
@@ -65,6 +70,10 @@ async function generateArticle(keywords, siteUrl, siteContent) {
     ? `以下是目标网站的部分内容，用于了解网站主题和风格：\n\n${siteContent}\n\n`
     : "";
 
+  const anglesContext = angles.length
+    ? `## 写作角度参考（仅供启发，非写作提纲）\n\n以下角度仅作为思路参考。你不需要覆盖所有角度，也不能按角度逐一展开——选择最能支撑文章核心叙事的一两个视角自然融入即可。角度是切入点，不是章节结构：\n${angles.map((a, i) => `${i + 1}. ${a}`).join("\n")}\n\n`
+    : "";
+
   const prompt = `你是一个有真实经验和独立判断的内容创作者。请根据以下信息写一篇双语（中英文）SEO文章，风格有个人视角，但语言精炼克制，不口语化。
 
 目标关键词：${keywords.join("、")}
@@ -72,6 +81,7 @@ async function generateArticle(keywords, siteUrl, siteContent) {
 目标网站：${siteUrl}
 
 ${siteContext}
+${anglesContext}
 
 ## 写作人格要求
 
@@ -288,10 +298,12 @@ function insertScreenshots(mdContent, shots) {
 async function main() {
   console.log(`\n🚀 SEO文章生成器`);
   console.log(`   关键词: ${keywords.join(", ")}`);
-  console.log(`   网站:   ${siteUrl}\n`);
+  console.log(`   网站:   ${siteUrl}`);
+  if (angles.length) console.log(`   角度:   ${angles.join(" / ")}`);
+  console.log("");
 
   const siteContent = await fetchSiteContent(siteUrl);
-  const raw = await generateArticle(keywords, siteUrl, siteContent);
+  const raw = await generateArticle(keywords, siteUrl, siteContent, angles);
 
   if (!raw) {
     console.error("✗ 文章生成失败，未收到内容");
