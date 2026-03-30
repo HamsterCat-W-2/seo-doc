@@ -118,6 +118,7 @@ ${anglesContext}
 
 - 开篇用场景/感受/反常识观点切入，禁止数据报告、市场规模开头
 - 禁用词：game-changer、seamless、comprehensive、dive into、it's worth noting、landscape、ecosystem、moreover、furthermore、in conclusion、值得注意的是、不可忽视、毋庸置疑、综上所述、总而言之、不言而喻、说真的（作为口头禅使用时）
+- 禁用场景标签：避免"出差时"、"通勤路上"、"飞机上"这类无细节的公式化标签；如需用生活场景，必须写出具体的画面（时间、情境、感受），不能只贴一个标签
 - 章节长度有变化，不能每节等长
 - 全文有清晰视角和立场，不做"中立综述"
 - 中英文各自要有对应语言真实的语感，不是互译
