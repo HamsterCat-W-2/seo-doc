@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NodeHtmlMarkdown } from "node-html-markdown";
-import puppeteer from "puppeteer";
+
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -59,8 +59,33 @@ async function fetchSiteContent(url) {
   }
 }
 
+// ─── FIND EXISTING ARTICLES (for dedup) ──────────────────────────────────────
+function findExistingArticles(keywords) {
+  const outputDir = path.join(__dirname, "output");
+  if (!fs.existsSync(outputDir)) return [];
+
+  const slug = keywords[0]
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 50);
+
+  const dirs = fs.readdirSync(outputDir).filter((d) => d.endsWith(slug));
+  const articles = [];
+  for (const dir of dirs) {
+    const zhPath = path.join(outputDir, dir, "zh.md");
+    if (fs.existsSync(zhPath)) {
+      const content = fs.readFileSync(zhPath, "utf8");
+      // Strip frontmatter
+      const body = content.replace(/^---[\s\S]*?---\n*/, "").trim();
+      if (body) articles.push({ date: dir.slice(0, 10), content: body.slice(0, 2000) });
+    }
+  }
+  return articles;
+}
+
 // ─── GENERATE ARTICLE ─────────────────────────────────────────────────────────
-async function generateArticle(keywords, siteUrl, siteContent, angles = []) {
+async function generateArticle(keywords, siteUrl, siteContent, angles = [], existingArticles = []) {
   const client = new Anthropic({
     authToken: process.env.ANTHROPIC_AUTH_TOKEN,
     baseURL: process.env.ANTHROPIC_BASE_URL,
@@ -74,6 +99,10 @@ async function generateArticle(keywords, siteUrl, siteContent, angles = []) {
     ? `## 写作角度参考（仅供启发，非写作提纲）\n\n以下角度仅作为思路参考。你不需要覆盖所有角度，也不能按角度逐一展开——选择最能支撑文章核心叙事的一两个视角自然融入即可。角度是切入点，不是章节结构：\n${angles.map((a, i) => `${i + 1}. ${a}`).join("\n")}\n\n`
     : "";
 
+  const dedupContext = existingArticles.length
+    ? `## 已有文章（必须避免重复）\n\n以下是同一关键词已经发布过的文章。你这次写的文章**必须**与它们在以下方面完全不同：标题、开篇切入点、章节结构、核心论点、举例和细节。不能用类似的叙事弧线，不能重复相同的功能卖点排列顺序。如果已有文章讲了安装流程，你可以只用一两句带过，把篇幅留给完全不同的内容。\n\n${existingArticles.map((a) => `### 已有文章 (${a.date})\n${a.content}`).join("\n\n")}\n\n`
+    : "";
+
   const prompt = `你是一个有真实经验和独立判断的内容创作者。请根据以下信息写一篇双语（中英文）SEO文章，风格有个人视角，但语言精炼克制，不口语化。
 
 目标关键词：${keywords.join("、")}
@@ -82,6 +111,7 @@ async function generateArticle(keywords, siteUrl, siteContent, angles = []) {
 
 ${siteContext}
 ${anglesContext}
+${dedupContext}
 
 ## 写作人格要求
 
@@ -188,115 +218,6 @@ site: ${siteUrl}
   return { articleDir, chinese, english };
 }
 
-// ─── PLAN SCREENSHOTS ─────────────────────────────────────────────────────────
-async function planScreenshots(chineseArticle, siteUrl) {
-  const client = new Anthropic({
-    authToken: process.env.ANTHROPIC_AUTH_TOKEN,
-    baseURL: process.env.ANTHROPIC_BASE_URL,
-  });
-
-  const result = await client.messages.create({
-    model: "claude-opus-4-6",
-    max_tokens: 1024,
-    tools: [
-      {
-        name: "screenshot_plan",
-        description: "根据文章内容规划截图方案",
-        input_schema: {
-          type: "object",
-          properties: {
-            screenshots: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  url: { type: "string", description: "要截图的完整URL" },
-                  filename: { type: "string", description: "截图文件名，如 screenshot-homepage.png" },
-                  insertAfterHeading: { type: "string", description: "插入到哪个H2标题之后，如 '## 1.' 或 '## 3.'" },
-                },
-                required: ["url", "filename", "insertAfterHeading"],
-              },
-              minItems: 1,
-              maxItems: 3,
-            },
-          },
-          required: ["screenshots"],
-        },
-      },
-    ],
-    tool_choice: { type: "tool", name: "screenshot_plan" },
-    messages: [
-      {
-        role: "user",
-        content: `你是一个SEO内容策略师。根据以下文章内容和目标网站，判断需要截哪些页面的截图（1-3张），以及每张截图应插入到文章的哪个H2章节之后。
-
-目标网站：${siteUrl}
-
-截图选择原则：
-- 优先截文章中明确提到或展示的页面（如首页、某个分类页、某个功能页）
-- 截图应该能直观印证文章的观点，让读者看了觉得"原来是这个样子"
-- 如果文章提到具体分类/功能，可以截对应子页面（如 ${siteUrl}category/puzzle）
-- 插入位置选择文章中最能和截图内容呼应的章节
-
-文章内容：
-${chineseArticle.slice(0, 2000)}`,
-      },
-    ],
-  });
-
-  const toolUse = result.content.find((b) => b.type === "tool_use");
-  if (!toolUse) return [];
-  return toolUse.input.screenshots || [];
-}
-
-// ─── TAKE SCREENSHOTS ─────────────────────────────────────────────────────────
-async function takeScreenshots(shots, articleDir) {
-  if (!shots.length) return;
-  console.log(`\n正在截图 (${shots.length} 张)...`);
-
-  const browser = await puppeteer.launch({ headless: true });
-  try {
-    for (const shot of shots) {
-      try {
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 800 });
-        await page.goto(shot.url, { waitUntil: "networkidle2", timeout: 20000 });
-        const filePath = path.join(articleDir, shot.filename);
-        await page.screenshot({ path: filePath, fullPage: false });
-        await page.close();
-        console.log(`  ✓ ${shot.filename}`);
-      } catch (err) {
-        console.warn(`  ⚠ 截图失败 ${shot.url}: ${err.message}`);
-      }
-    }
-  } finally {
-    await browser.close();
-  }
-}
-
-// ─── INSERT SCREENSHOTS INTO MARKDOWN ─────────────────────────────────────────
-function insertScreenshots(mdContent, shots) {
-  let result = mdContent;
-  for (const shot of shots) {
-    const headingPrefix = shot.insertAfterHeading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const headingRegex = new RegExp(`${headingPrefix}[^\n]*\n`, "m");
-    const match = headingRegex.exec(result);
-    if (!match) continue;
-
-    // Find the first paragraph after the heading (skip blank lines after heading)
-    const afterHeading = result.slice(match.index + match[0].length);
-    // Find end of first paragraph: look for a blank line after non-empty content
-    const firstParaMatch = afterHeading.match(/\n\n/);
-    const insertOffset = firstParaMatch
-      ? match.index + match[0].length + firstParaMatch.index + 2
-      : match.index + match[0].length + afterHeading.length;
-
-    const imgMarkdown = `![${shot.filename}](./${shot.filename})\n\n`;
-    result = result.slice(0, insertOffset) + imgMarkdown + result.slice(insertOffset);
-  }
-  return result;
-}
-
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`\n🚀 SEO文章生成器`);
@@ -306,31 +227,19 @@ async function main() {
   console.log("");
 
   const siteContent = await fetchSiteContent(siteUrl);
-  const raw = await generateArticle(keywords, siteUrl, siteContent, angles);
+  const existingArticles = findExistingArticles(keywords);
+  if (existingArticles.length) {
+    console.log(`📎 发现 ${existingArticles.length} 篇同关键词旧文章，将自动去重`);
+  }
+  const raw = await generateArticle(keywords, siteUrl, siteContent, angles, existingArticles);
 
   if (!raw) {
     console.error("✗ 文章生成失败，未收到内容");
     process.exit(1);
   }
 
-  const { articleDir, chinese, english } = parseAndSave(raw, keywords, siteUrl);
+  const { articleDir } = parseAndSave(raw, keywords, siteUrl);
   console.log(`\n✅ 文章已保存: ${articleDir}/\n   ├── zh.md\n   └── en.md`);
-
-  // Plan and take screenshots
-  console.log("\n正在规划截图方案...");
-  const shots = await planScreenshots(chinese, siteUrl);
-  if (shots.length) {
-    await takeScreenshots(shots, articleDir);
-
-    // Insert screenshot references into both markdown files
-    const zhPath = path.join(articleDir, "zh.md");
-    const enPath = path.join(articleDir, "en.md");
-    fs.writeFileSync(zhPath, insertScreenshots(fs.readFileSync(zhPath, "utf8"), shots), "utf8");
-    fs.writeFileSync(enPath, insertScreenshots(fs.readFileSync(enPath, "utf8"), shots), "utf8");
-    console.log(`✅ 截图已插入文章`);
-  } else {
-    console.log("⚠ 未生成截图方案");
-  }
 }
 
 main().catch((err) => {
