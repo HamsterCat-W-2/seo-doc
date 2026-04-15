@@ -18,10 +18,11 @@ function getArg(name) {
 const keywordsRaw = getArg("--keywords");
 const siteUrl = getArg("--url");
 const anglesRaw = getArg("--angles");
+const lang = getArg("--lang"); // e.g. "Bahasa Indonesia" — defaults to English
 
 if (!keywordsRaw || !siteUrl) {
   console.error(
-    "用法: node generate.js --keywords \"关键词1,关键词2\" --url https://example.com [--angles \"角度1,角度2\"]"
+    "用法: node generate.js --keywords \"关键词1,关键词2\" --url https://example.com [--angles \"角度1,角度2\"] [--lang \"Bahasa Indonesia\"]"
   );
   process.exit(1);
 }
@@ -85,7 +86,7 @@ function findExistingArticles(keywords) {
 }
 
 // ─── GENERATE ARTICLE ─────────────────────────────────────────────────────────
-async function generateArticle(keywords, siteUrl, siteContent, angles = [], existingArticles = []) {
+async function generateArticle(keywords, siteUrl, siteContent, angles = [], existingArticles = [], lang = "English") {
   const client = new Anthropic({
     authToken: process.env.ANTHROPIC_AUTH_TOKEN,
     baseURL: process.env.ANTHROPIC_BASE_URL,
@@ -103,7 +104,7 @@ async function generateArticle(keywords, siteUrl, siteContent, angles = [], exis
     ? `## 已有文章（必须避免重复）\n\n以下是同一关键词已经发布过的文章。你这次写的文章**必须**与它们在以下方面完全不同：标题、开篇切入点、章节结构、核心论点、举例和细节。不能用类似的叙事弧线，不能重复相同的功能卖点排列顺序。如果已有文章讲了安装流程，你可以只用一两句带过，把篇幅留给完全不同的内容。\n\n${existingArticles.map((a) => `### 已有文章 (${a.date})\n${a.content}`).join("\n\n")}\n\n`
     : "";
 
-  const prompt = `你是一个有真实经验和独立判断的内容创作者。请根据以下信息写一篇双语（中英文）SEO文章，风格有个人视角，但语言精炼克制，不口语化。
+  const prompt = `你是一个有真实经验和独立判断的内容创作者。请根据以下信息写一篇SEO文章，风格有个人视角，但语言精炼克制，不口语化。
 
 目标关键词：${keywords.join("、")}
 主关键词：${primaryKeyword}
@@ -113,13 +114,17 @@ ${siteContext}
 ${anglesContext}
 ${dedupContext}
 
+## 语言要求
+
+文章分两部分：第一部分中文，第二部分${lang}。两部分各自独立成文，不是互译。
+
 ## 写作人格要求
 
 文章要有"我"的视角和立场——有亲身体验，有明确判断，敢于说"这个值得用/这个不行"。但这个"我"是一个表达克制、有观察力的作者，不是在跟朋友发消息的人。
 
 具体要求：
 - 中文：用第一人称写，有真实感，但避免口头禅式表达（去掉"说真的"、"你懂那种感觉吗"、"反正"这类词）。语气像一篇写得好的专栏文章——有态度，但不随意
-- 英文：使用自然缩写（you've, it's, don't, I've），语气直接有力，但不口语化到像 SMS。结尾句要干脆，不是堆感叹号，也不是过于俏皮的"Done." / "That's it."
+- ${lang}：用该语言自然的写作习惯，保持专业但有人格感。${lang === "English" ? "使用自然缩写（you've, it's, don't, I've），语气直接有力，但不口语化到像 SMS。结尾句要干脆，不是堆感叹号，也不是过于俏皮的\"Done.\" / \"That's it.\"" : ""}
 - 对 ${siteUrl} 的引用：像一个有经验的人分享自己真正在用的东西，自然但有分量
 
 ## 写作风格
@@ -158,7 +163,7 @@ ${dedupContext}
 ---CHINESE---
 （此处放中文文章全文，使用 Markdown 格式）
 ---ENGLISH---
-（此处放英文文章全文，使用 Markdown 格式）
+（此处放${lang}文章全文，必须用${lang}写作，不是英文，不是中文，是${lang}。使用 Markdown 格式）
 ---END---
 `;
 
@@ -186,13 +191,36 @@ ${dedupContext}
   return textBlock ? textBlock.text : "";
 }
 
+// ─── LANGUAGE CODE MAP ─────────────────────────────────────────────────────────
+const langCodeMap = {
+  "english": "en",
+  "bahasa indonesia": "id",
+  "indonesian": "id",
+  "japanese": "ja",
+  "korean": "ko",
+  "spanish": "es",
+  "french": "fr",
+  "portuguese": "pt",
+  "thai": "th",
+  "vietnamese": "vi",
+  "filipino": "fil",
+  "malay": "ms",
+  "arabic": "ar",
+  "hindi": "hi",
+};
+
+function getLangCode(lang) {
+  const key = (lang || "English").toLowerCase().trim();
+  return langCodeMap[key] || key.slice(0, 2).toLowerCase();
+}
+
 // ─── PARSE & SAVE ─────────────────────────────────────────────────────────────
-function parseAndSave(raw, keywords, siteUrl) {
+function parseAndSave(raw, keywords, siteUrl, lang = "English") {
   const chMatch = raw.match(/---CHINESE---([\s\S]*?)---ENGLISH---/);
   const enMatch = raw.match(/---ENGLISH---([\s\S]*?)---END---/);
 
   const chinese = chMatch ? chMatch[1].trim() : raw;
-  const english = enMatch ? enMatch[1].trim() : "";
+  const secondLang = enMatch ? enMatch[1].trim() : "";
 
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   const slug = keywords[0]
@@ -213,9 +241,10 @@ site: ${siteUrl}
 
 `;
 
+  const langFile = `${getLangCode(lang)}.md`;
   fs.writeFileSync(path.join(articleDir, "zh.md"), meta + chinese, "utf8");
-  fs.writeFileSync(path.join(articleDir, "en.md"), meta + english, "utf8");
-  return { articleDir, chinese, english };
+  fs.writeFileSync(path.join(articleDir, langFile), meta + secondLang, "utf8");
+  return { articleDir, chinese, secondLang, langFile };
 }
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
@@ -231,15 +260,16 @@ async function main() {
   if (existingArticles.length) {
     console.log(`📎 发现 ${existingArticles.length} 篇同关键词旧文章，将自动去重`);
   }
-  const raw = await generateArticle(keywords, siteUrl, siteContent, angles, existingArticles);
+  const effectiveLang = lang || "English";
+  const raw = await generateArticle(keywords, siteUrl, siteContent, angles, existingArticles, effectiveLang);
 
   if (!raw) {
     console.error("✗ 文章生成失败，未收到内容");
     process.exit(1);
   }
 
-  const { articleDir } = parseAndSave(raw, keywords, siteUrl);
-  console.log(`\n✅ 文章已保存: ${articleDir}/\n   ├── zh.md\n   └── en.md`);
+  const { articleDir, langFile } = parseAndSave(raw, keywords, siteUrl, effectiveLang);
+  console.log(`\n✅ 文章已保存: ${articleDir}/\n   ├── zh.md\n   └── ${langFile}`);
 }
 
 main().catch((err) => {
