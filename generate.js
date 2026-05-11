@@ -170,7 +170,7 @@ ${dedupContext}
   console.log("正在调用 Claude API 生成文章...");
 
   const stream = client.messages.stream({
-    model: "claude-opus-4-6",
+    model: "claude-sonnet-4-6",
     max_tokens: 8192,
     messages: [{ role: "user", content: prompt }],
   });
